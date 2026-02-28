@@ -4,6 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // ── Public library module ─────────────────────────────────────────────────
+    // Downstream projects (e.g. aeon) import neon via:
+    //   .neon = .{ .path = "../neon" }    in build.zig.zon
+    //   neon_dep.module("neon")           in build.zig
+    const lib_mod = b.addModule("neon", .{
+        .root_source_file = b.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lib_mod.linkSystemLibrary("sqlite3", .{});
+    lib_mod.link_libc = true;
+
+    // ── CLI executable ────────────────────────────────────────────────────────
     const exe = b.addExecutable(.{
         .name = "neon",
         .root_module = b.createModule(.{

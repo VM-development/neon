@@ -1,0 +1,15 @@
+.{
+    .name = .neon_example,
+    .version = "0.0.1",
+    .fingerprint = 0x50fee34327daa213,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        // Path dependency — points at the neon library one directory up.
+        .neon = .{ .path = ".." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

@@ -25,6 +25,27 @@ pub const QueryInput = struct {
     vector_weight: f64 = 0.55,
 };
 
+/// Input to Engine.writeMemory.
+pub const MemoryInput = struct {
+    /// Namespaced key, e.g. "user:name" or "user:local:pref:language".
+    memory_key: []const u8,
+    /// Semantic category, e.g. "profile", "preference", "fact".
+    mem_type: []const u8,
+    /// Who wrote this, e.g. "manual", "inference", "tool".
+    source: []const u8,
+    /// The value to store.
+    content: []const u8,
+    /// How certain we are: 0.0 (guess) … 1.0 (verified fact).
+    confidence: f64,
+    /// How important this is for future recall: 0.0 … 1.0.
+    salience: f64,
+    /// Optional Unix timestamp after which this memory expires.
+    expires_at: ?i64 = null,
+};
+
+/// Re-export so callers only need to import api.zig.
+pub const MemoryRow = db_mod.MemoryRow;
+
 pub const SearchHit = struct {
     chunk_id: i64,
     collection: []u8,
@@ -55,6 +76,56 @@ pub const Engine = struct {
     pub fn close(self: *Engine) void {
         self.db.close();
     }
+
+    // ── Memory (key-value) operations ─────────────────────────────────────────
+    // All timestamps are derived from std.time.timestamp() internally so
+    // callers never have to manage them.
+
+    /// Write or update a key-value memory entry.
+    /// If `memory_key` already exists, the previous entry is superseded and a
+    /// new revision is appended to the append-only `memory_events` log.
+    pub fn writeMemory(self: *Engine, input: MemoryInput) !void {
+        try self.db.writeMemory(.{
+            .memory_key = input.memory_key,
+            .mem_type = input.mem_type,
+            .source = input.source,
+            .content = input.content,
+            .confidence = input.confidence,
+            .salience = input.salience,
+            .now_ts = std.time.timestamp(),
+            .expires_at = input.expires_at,
+        });
+    }
+
+    /// Tombstone a memory entry.  The key disappears from ranked recall but the
+    /// full audit trail is preserved in `memory_events`.
+    pub fn deleteMemory(self: *Engine, memory_key: []const u8, source: []const u8) !void {
+        try self.db.deleteMemory(memory_key, source, std.time.timestamp());
+    }
+
+    /// Update the `last_accessed_at` timestamp of an existing memory entry.
+    /// This re-weights the entry in recency-based ranking without changing the
+    /// stored content.  Returns `error.MemoryNotFound` if the key does not exist.
+    pub fn touchMemory(self: *Engine, memory_key: []const u8, source: []const u8) !void {
+        try self.db.touchMemory(memory_key, source, std.time.timestamp());
+    }
+
+    /// Return the top `limit` memories sorted by the ranking formula:
+    ///   rank = 0.45 * salience + 0.35 * confidence + 0.20 * recency_decay
+    /// Expired entries are excluded.  Caller owns the returned slice; free with
+    /// `freeMemoryRows`.
+    pub fn listMemoriesRanked(self: *Engine, limit: usize) ![]MemoryRow {
+        return self.db.listMemoriesRanked(self.allocator, std.time.timestamp(), limit);
+    }
+
+    /// Convenience: return the raw content string for a single memory key, or
+    /// null if it does not exist / has been deleted.  Caller owns the returned
+    /// string; free with `allocator.free`.
+    pub fn getMemoryContent(self: *Engine, memory_key: []const u8) !?[]u8 {
+        return self.db.currentMemoryContent(self.allocator, memory_key);
+    }
+
+    // ── Document / chunk operations ───────────────────────────────────────────
 
     pub fn upsertDocument(self: *Engine, input: DocumentInput) !void {
         const path_id = try path_norm.normalizePathIdentity(self.allocator, input.path);
@@ -232,6 +303,11 @@ pub const Engine = struct {
 pub fn freeSearchHits(allocator: std.mem.Allocator, hits: []SearchHit) void {
     for (hits) |row| row.deinit(allocator);
     allocator.free(hits);
+}
+
+/// Free a slice returned by `Engine.listMemoriesRanked`.
+pub fn freeMemoryRows(allocator: std.mem.Allocator, rows: []MemoryRow) void {
+    db_mod.Db.freeMemoryRows(allocator, rows);
 }
 
 fn normalizeWeights(lexical: f64, vector: f64) struct { lexical: f64, vector: f64 } {
