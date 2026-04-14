@@ -1,4 +1,5 @@
 const std = @import("std");
+const Io = std.Io;
 const db_mod = @import("db.zig");
 const path_norm = @import("path_norm.zig");
 const vector_mod = @import("vector.zig");
@@ -64,13 +65,14 @@ pub const SearchHit = struct {
 
 pub const Engine = struct {
     allocator: std.mem.Allocator,
+    io: Io,
     db: db_mod.Db,
 
-    pub fn open(allocator: std.mem.Allocator, db_path: []const u8) !Engine {
-        var db = try db_mod.Db.open(allocator, db_path);
+    pub fn open(allocator: std.mem.Allocator, io: Io, db_path: []const u8) !Engine {
+        var db = try db_mod.Db.open(allocator, io, db_path);
         errdefer db.close();
         try db.initSchema();
-        return .{ .allocator = allocator, .db = db };
+        return .{ .allocator = allocator, .io = io, .db = db };
     }
 
     pub fn close(self: *Engine) void {
@@ -328,8 +330,9 @@ fn searchHitLessThan(_: void, a: SearchHit, b: SearchHit) bool {
 
 test "engine hybrid query supports adaptive collection filtering" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
 
-    var engine = try Engine.open(allocator, ":memory:");
+    var engine = try Engine.open(allocator, io, ":memory:");
     defer engine.close();
 
     const chunk_other = [_]ChunkInput{

@@ -1,15 +1,21 @@
 const std = @import("std");
+const Io = std.Io;
 const db_mod = @import("db.zig");
 const mcp_tools = @import("mcp_tools.zig");
 const api_mod = @import("api.zig");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+/// Get current Unix epoch timestamp in seconds.
+/// Replaces std.time.timestamp() which was removed in 0.16.
+fn currentUnixSeconds(io: Io) i64 {
+    const ts = Io.Timestamp.now(io, .real);
+    return @intCast(@divFloor(ts.nanoseconds, std.time.ns_per_s));
+}
 
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+    const io = init.io;
+
+    const argv = try init.minimal.args.toSlice(init.arena.allocator());
 
     if (argv.len < 2) {
         usage();
@@ -19,38 +25,38 @@ pub fn main() !void {
     const cmd = argv[1];
     if (std.mem.eql(u8, cmd, "init")) {
         if (argv.len != 3) return usage();
-        try runInit(allocator, argv[2]);
+        try runInit(allocator, io, argv[2]);
         return;
     }
     if (std.mem.eql(u8, cmd, "memory-put")) {
         if (argv.len < 9 or argv.len > 10) return usage();
-        try runMemoryPut(allocator, argv);
+        try runMemoryPut(allocator, io, argv);
         return;
     }
     if (std.mem.eql(u8, cmd, "memory-delete")) {
         if (argv.len != 5) return usage();
-        try runMemoryDelete(allocator, argv[2], argv[3], argv[4]);
+        try runMemoryDelete(allocator, io, argv[2], argv[3], argv[4]);
         return;
     }
     if (std.mem.eql(u8, cmd, "memory-touch")) {
         if (argv.len != 5) return usage();
-        try runMemoryTouch(allocator, argv[2], argv[3], argv[4]);
+        try runMemoryTouch(allocator, io, argv[2], argv[3], argv[4]);
         return;
     }
     if (std.mem.eql(u8, cmd, "memory-list")) {
         if (argv.len < 3 or argv.len > 4) return usage();
         const limit: usize = if (argv.len == 4) try std.fmt.parseUnsigned(usize, argv[3], 10) else 20;
-        try runMemoryList(allocator, argv[2], limit);
+        try runMemoryList(allocator, io, argv[2], limit);
         return;
     }
     if (std.mem.eql(u8, cmd, "doc-put")) {
         if (argv.len < 7 or argv.len > 8) return usage();
-        try runDocPut(allocator, argv);
+        try runDocPut(allocator, io, argv);
         return;
     }
     if (std.mem.eql(u8, cmd, "query")) {
         if (argv.len < 5 or argv.len > 7) return usage();
-        try runQuery(allocator, argv);
+        try runQuery(allocator, io, argv);
         return;
     }
     if (std.mem.eql(u8, cmd, "mcp-tools")) {
@@ -61,14 +67,14 @@ pub fn main() !void {
     usage();
 }
 
-fn runInit(allocator: std.mem.Allocator, db_path: []const u8) !void {
-    var db = try db_mod.Db.open(allocator, db_path);
+fn runInit(allocator: std.mem.Allocator, io: Io, db_path: []const u8) !void {
+    var db = try db_mod.Db.open(allocator, io, db_path);
     defer db.close();
     try db.initSchema();
     std.debug.print("initialized schema at {s}\n", .{db_path});
 }
 
-fn runMemoryPut(allocator: std.mem.Allocator, argv: []const []const u8) !void {
+fn runMemoryPut(allocator: std.mem.Allocator, io: Io, argv: []const []const u8) !void {
     const db_path = argv[2];
     const memory_key = argv[3];
     const mem_type = argv[4];
@@ -77,9 +83,9 @@ fn runMemoryPut(allocator: std.mem.Allocator, argv: []const []const u8) !void {
     const salience = try std.fmt.parseFloat(f64, argv[7]);
     const content = argv[8];
     const expires_at: ?i64 = if (argv.len == 10) try std.fmt.parseInt(i64, argv[9], 10) else null;
-    const now_ts = std.time.timestamp();
+    const now_ts = currentUnixSeconds(io);
 
-    var db = try db_mod.Db.open(allocator, db_path);
+    var db = try db_mod.Db.open(allocator, io, db_path);
     defer db.close();
     try db.initSchema();
     try db.writeMemory(.{
@@ -97,36 +103,38 @@ fn runMemoryPut(allocator: std.mem.Allocator, argv: []const []const u8) !void {
 
 fn runMemoryDelete(
     allocator: std.mem.Allocator,
+    io: Io,
     db_path: []const u8,
     memory_key: []const u8,
     source: []const u8,
 ) !void {
-    var db = try db_mod.Db.open(allocator, db_path);
+    var db = try db_mod.Db.open(allocator, io, db_path);
     defer db.close();
     try db.initSchema();
-    try db.deleteMemory(memory_key, source, std.time.timestamp());
+    try db.deleteMemory(memory_key, source, currentUnixSeconds(io));
     std.debug.print("memory deleted: {s}\n", .{memory_key});
 }
 
 fn runMemoryTouch(
     allocator: std.mem.Allocator,
+    io: Io,
     db_path: []const u8,
     memory_key: []const u8,
     source: []const u8,
 ) !void {
-    var db = try db_mod.Db.open(allocator, db_path);
+    var db = try db_mod.Db.open(allocator, io, db_path);
     defer db.close();
     try db.initSchema();
-    try db.touchMemory(memory_key, source, std.time.timestamp());
+    try db.touchMemory(memory_key, source, currentUnixSeconds(io));
     std.debug.print("memory touched: {s}\n", .{memory_key});
 }
 
-fn runMemoryList(allocator: std.mem.Allocator, db_path: []const u8, limit: usize) !void {
-    var db = try db_mod.Db.open(allocator, db_path);
+fn runMemoryList(allocator: std.mem.Allocator, io: Io, db_path: []const u8, limit: usize) !void {
+    var db = try db_mod.Db.open(allocator, io, db_path);
     defer db.close();
     try db.initSchema();
 
-    const rows = try db.listMemoriesRanked(allocator, std.time.timestamp(), limit);
+    const rows = try db.listMemoriesRanked(allocator, currentUnixSeconds(io), limit);
     defer db_mod.Db.freeMemoryRows(allocator, rows);
 
     for (rows) |row| {
@@ -146,7 +154,7 @@ fn runMcpTools() !void {
     }
 }
 
-fn runDocPut(allocator: std.mem.Allocator, argv: []const []const u8) !void {
+fn runDocPut(allocator: std.mem.Allocator, io: Io, argv: []const []const u8) !void {
     const db_path = argv[2];
     const collection = argv[3];
     const path = argv[4];
@@ -156,7 +164,7 @@ fn runDocPut(allocator: std.mem.Allocator, argv: []const []const u8) !void {
     const embedding = if (argv.len == 8) try parseEmbeddingCsv(allocator, argv[7]) else null;
     defer if (embedding) |vec| allocator.free(vec);
 
-    var engine = try api_mod.Engine.open(allocator, db_path);
+    var engine = try api_mod.Engine.open(allocator, io, db_path);
     defer engine.close();
 
     const chunks = [_]api_mod.ChunkInput{.{
@@ -167,14 +175,14 @@ fn runDocPut(allocator: std.mem.Allocator, argv: []const []const u8) !void {
         .collection = collection,
         .path = path,
         .hash = hash,
-        .modified_at = std.time.timestamp(),
+        .modified_at = currentUnixSeconds(io),
         .chunks = &chunks,
     });
 
     std.debug.print("document upserted: {s}/{s}\n", .{ collection, path });
 }
 
-fn runQuery(allocator: std.mem.Allocator, argv: []const []const u8) !void {
+fn runQuery(allocator: std.mem.Allocator, io: Io, argv: []const []const u8) !void {
     const db_path = argv[2];
     const query_text = argv[3];
     const limit = try std.fmt.parseUnsigned(usize, argv[4], 10);
@@ -182,7 +190,7 @@ fn runQuery(allocator: std.mem.Allocator, argv: []const []const u8) !void {
     const embedding = if (argv.len == 7) try parseEmbeddingCsv(allocator, argv[6]) else null;
     defer if (embedding) |vec| allocator.free(vec);
 
-    var engine = try api_mod.Engine.open(allocator, db_path);
+    var engine = try api_mod.Engine.open(allocator, io, db_path);
     defer engine.close();
 
     const hits = try engine.hybridQuery(.{

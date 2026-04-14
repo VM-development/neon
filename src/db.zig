@@ -1,4 +1,6 @@
 const std = @import("std");
+const Io = std.Io;
+// NOTE: @cImport is deprecated in 0.16 — migrate to build-system translate-c when ready.
 const c = @cImport({
     @cInclude("sqlite3.h");
 });
@@ -103,8 +105,9 @@ const CurrentMemory = struct {
 pub const Db = struct {
     handle: *c.sqlite3,
     allocator: std.mem.Allocator,
+    io: Io,
 
-    pub fn open(allocator: std.mem.Allocator, path: []const u8) !Db {
+    pub fn open(allocator: std.mem.Allocator, io: Io, path: []const u8) !Db {
         const zpath = try allocator.dupeZ(u8, path);
         defer allocator.free(zpath);
 
@@ -120,6 +123,7 @@ pub const Db = struct {
         return .{
             .handle = raw_handle.?,
             .allocator = allocator,
+            .io = io,
         };
     }
 
@@ -209,7 +213,7 @@ pub const Db = struct {
     }
 
     pub fn upsertDocument(self: *Db, input: DocumentUpsertInput) !void {
-        const now_ts = std.time.timestamp();
+        const now_ts = currentUnixSeconds(self.io);
 
         try self.exec("BEGIN IMMEDIATE;");
         var committed = false;
@@ -451,7 +455,7 @@ pub const Db = struct {
         defer if (supersedes) |value| self.allocator.free(value);
 
         var event_id: [32]u8 = undefined;
-        generateEventId(&event_id);
+        generateEventId(self.io, &event_id);
 
         const insert_event = try self.prepare(
             \\INSERT INTO memory_events(
@@ -523,7 +527,7 @@ pub const Db = struct {
         defer if (supersedes) |value| self.allocator.free(value);
 
         var event_id: [32]u8 = undefined;
-        generateEventId(&event_id);
+        generateEventId(self.io, &event_id);
 
         const insert_event = try self.prepare(
             \\INSERT INTO memory_events(
@@ -563,7 +567,7 @@ pub const Db = struct {
         defer if (!committed) self.exec("ROLLBACK;") catch {};
 
         var event_id: [32]u8 = undefined;
-        generateEventId(&event_id);
+        generateEventId(self.io, &event_id);
 
         const insert_event = try self.prepare(
             \\INSERT INTO memory_events(
@@ -805,10 +809,17 @@ fn copyColumnText(allocator: std.mem.Allocator, stmt: *c.sqlite3_stmt, column: c
     return allocator.dupe(u8, slice);
 }
 
-fn generateEventId(buf: *[32]u8) void {
+fn generateEventId(io: Io, buf: *[32]u8) void {
     var bytes: [16]u8 = undefined;
-    std.crypto.random.bytes(&bytes);
+    io.random(&bytes);
     buf.* = std.fmt.bytesToHex(bytes, .lower);
+}
+
+/// Get current Unix epoch timestamp in seconds.
+/// Replaces std.time.timestamp() which was removed in 0.16.
+fn currentUnixSeconds(io: Io) i64 {
+    const ts = Io.Timestamp.now(io, .real);
+    return @intCast(@divFloor(ts.nanoseconds, std.time.ns_per_s));
 }
 
 fn bm25ToUnitScore(value: f64) f64 {
@@ -853,8 +864,9 @@ fn vectorHitLessThan(_: void, a: VectorChunkHit, b: VectorChunkHit) bool {
 
 test "write memory keeps append-only history and updates current view" {
     const alloc = std.testing.allocator;
+    const io = std.testing.io;
 
-    var db = try Db.open(alloc, ":memory:");
+    var db = try Db.open(alloc, io, ":memory:");
     defer db.close();
     try db.initSchema();
 
@@ -887,8 +899,9 @@ test "write memory keeps append-only history and updates current view" {
 
 test "delete memory appends tombstone and removes current record" {
     const alloc = std.testing.allocator;
+    const io = std.testing.io;
 
-    var db = try Db.open(alloc, ":memory:");
+    var db = try Db.open(alloc, io, ":memory:");
     defer db.close();
     try db.initSchema();
 
@@ -912,8 +925,9 @@ test "delete memory appends tombstone and removes current record" {
 
 test "ranking blends salience confidence and recency" {
     const alloc = std.testing.allocator;
+    const io = std.testing.io;
 
-    var db = try Db.open(alloc, ":memory:");
+    var db = try Db.open(alloc, io, ":memory:");
     defer db.close();
     try db.initSchema();
 
@@ -945,8 +959,9 @@ test "ranking blends salience confidence and recency" {
 
 test "document chunks support both lexical and vector retrieval" {
     const alloc = std.testing.allocator;
+    const io = std.testing.io;
 
-    var db = try Db.open(alloc, ":memory:");
+    var db = try Db.open(alloc, io, ":memory:");
     defer db.close();
     try db.initSchema();
 
