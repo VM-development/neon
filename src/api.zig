@@ -4,6 +4,12 @@ const db_mod = @import("db.zig");
 const path_norm = @import("path_norm.zig");
 const vector_mod = @import("vector.zig");
 
+/// Get current Unix epoch timestamp in seconds.
+fn currentUnixSeconds(io: Io) i64 {
+    const ts = Io.Timestamp.now(io, .real);
+    return @intCast(@divFloor(ts.nanoseconds, std.time.ns_per_s));
+}
+
 pub const ChunkInput = struct {
     content: []const u8,
     embedding: ?[]const f32 = null,
@@ -80,7 +86,7 @@ pub const Engine = struct {
     }
 
     // ── Memory (key-value) operations ─────────────────────────────────────────
-    // All timestamps are derived from std.time.timestamp() internally so
+    // All timestamps are derived from currentUnixSeconds() internally so
     // callers never have to manage them.
 
     /// Write or update a key-value memory entry.
@@ -94,7 +100,7 @@ pub const Engine = struct {
             .content = input.content,
             .confidence = input.confidence,
             .salience = input.salience,
-            .now_ts = std.time.timestamp(),
+            .now_ts = currentUnixSeconds(self.io),
             .expires_at = input.expires_at,
         });
     }
@@ -102,14 +108,14 @@ pub const Engine = struct {
     /// Tombstone a memory entry.  The key disappears from ranked recall but the
     /// full audit trail is preserved in `memory_events`.
     pub fn deleteMemory(self: *Engine, memory_key: []const u8, source: []const u8) !void {
-        try self.db.deleteMemory(memory_key, source, std.time.timestamp());
+        try self.db.deleteMemory(memory_key, source, currentUnixSeconds(self.io));
     }
 
     /// Update the `last_accessed_at` timestamp of an existing memory entry.
     /// This re-weights the entry in recency-based ranking without changing the
     /// stored content.  Returns `error.MemoryNotFound` if the key does not exist.
     pub fn touchMemory(self: *Engine, memory_key: []const u8, source: []const u8) !void {
-        try self.db.touchMemory(memory_key, source, std.time.timestamp());
+        try self.db.touchMemory(memory_key, source, currentUnixSeconds(self.io));
     }
 
     /// Return the top `limit` memories sorted by the ranking formula:
@@ -117,7 +123,7 @@ pub const Engine = struct {
     /// Expired entries are excluded.  Caller owns the returned slice; free with
     /// `freeMemoryRows`.
     pub fn listMemoriesRanked(self: *Engine, limit: usize) ![]MemoryRow {
-        return self.db.listMemoriesRanked(self.allocator, std.time.timestamp(), limit);
+        return self.db.listMemoriesRanked(self.allocator, currentUnixSeconds(self.io), limit);
     }
 
     /// Convenience: return the raw content string for a single memory key, or
